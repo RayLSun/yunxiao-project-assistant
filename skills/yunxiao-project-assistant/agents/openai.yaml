@@ -1,0 +1,15 @@
+interface:
+  display_name: "云效项目助手"
+  short_description: "Use Yunxiao MCP to handle requirements and tasks"
+  default_prompt: "Use $yunxiao-project-assistant to analyze and update Yunxiao requirements and tasks."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "yunxiao"
+      description: "Alibaba Cloud DevOps Yunxiao MCP Server for Projex project-management work items"
+      transport: "streamable_http"
+      url: "https://openapi-rdc.aliyuncs.com/ai/mcp?toolsets=project-management"
+
+policy:
+  allow_implicit_invocation: true

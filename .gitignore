@@ -1,0 +1,28 @@
+# Config file with real tokens - never commit
+config/yunxiao_config.json
+
+# Output directories
+exports/
+prds/
+doc/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Backups
+*.20260711
+*.bak
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*~

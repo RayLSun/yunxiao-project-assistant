@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "yunxiao": {
+      "url": "https://openapi-rdc.aliyuncs.com/ai/mcp?toolsets=project-management",
+      "headers": {
+        "Authorization": "Bearer <YOUR_TOKEN>"
+      }
+    }
+  }
+}

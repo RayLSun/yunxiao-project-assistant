@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "yunxiao": {
+      "command": "npx",
+      "args": ["-y", "alibabacloud-devops-mcp-server", "--toolsets=project-management"],
+      "env": {
+        "YUNXIAO_ACCESS_TOKEN": "<YOUR_TOKEN>"
+      }
+    }
+  }
+}

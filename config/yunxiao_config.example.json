@@ -1,0 +1,41 @@
+{
+  "domain": "openapi-rdc.aliyuncs.com",
+  "yunxiao_token": "pt-your-token",
+  "organization_id": "your-organization-id",
+  "project_id": "your-project-id",
+  "corpid": "",
+  "sprint_id": "",
+  "sprint_keyword": "",
+  "sprint_statuses": "TODO,DOING,ARCHIVED",
+  "excel": {
+    "requirement_sheet_title": "当前迭代需求",
+    "task_sheet_title": "当前迭代任务",
+    "requirement_headers": [],
+    "task_headers": []
+  },
+  "team": {
+    "members": [
+      {"name": "", "role": "产品", "is_tl": false, "exempt": true, "yunxiao_id": ""},
+      {"name": "", "role": "后端研发", "is_tl": true, "yunxiao_id": ""},
+      {"name": "", "role": "后端研发", "is_tl": false, "yunxiao_id": ""},
+      {"name": "", "role": "前端研发", "is_tl": true, "yunxiao_id": ""},
+      {"name": "", "role": "前端研发", "is_tl": false, "yunxiao_id": ""},
+      {"name": "", "role": "RPA研发", "is_tl": false, "yunxiao_id": ""}
+    ],
+    "workload": {
+      "default_hours_per_sprint": 76,
+      "tl_hours_per_sprint": 72
+    }
+  },
+  "task_creation": {
+    "workitem_type_id": "",
+    "hours_field_id": "",
+    "available_hours": [2, 4, 8],
+    "role_prefixes": {
+      "后端研发": "【后端】",
+      "前端研发": "【前端】",
+      "RPA研发": "【RPA】"
+    },
+    "members_to_fill": []
+  }
+}
