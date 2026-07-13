@@ -25,6 +25,7 @@ Both modes share the same authentication (personal access token) and organizatio
 | Discover creator IDs in a project | Script: `list_requirements.py --dump-creators` | Discovery helper |
 | Export team-created requirements to Excel | Script: `export_team_requirements.py` | Sprint + team creator filter, single Excel |
 | Export sprint workload statistics | Script: `export_sprint_workload.py` | Per-person 预计工时 vs required hours |
+| Export sprint tasks filtered by role | Script: `export_sprint_tasks_by_role.py` | Per-role task list with 链接 column + 工时汇总 |
 | Auto-create tasks to fill workload gaps | Script: `create_tasks.py` | Creates tasks under requirements for under-hour members |
 | Analyze a requirement (description, comments, fields) | MCP | Flexible, multi-tool, AI synthesizes |
 | Check status / assignee across items | MCP | Ad-hoc, user-driven scope |
@@ -105,16 +106,20 @@ Output: JSON on stdout (default) or formatted table. JSON includes id, serialNum
 
 ### export_team_requirements.py - Export Team Requirements To Excel
 
-Exports all requirements created by team members in a specific sprint to a single Excel file.
+Exports all requirements created by team members in a specific sprint to a single Excel file with three sheets:
+
+1. **需求列表** - all team-created requirements with auto-discovered custom fields
+2. **任务明细** - child tasks under those requirements (任务编号, 任务标题, 负责人, 角色, 预计工时, 状态, 父需求编号, 父需求标题)
+3. **工时汇总** - per-person summary (姓名, 角色, 任务数, 预计工时) with totals row
 
 ```bash
 python scripts/export_team_requirements.py --sprint-name "Sprint260728"
 
-# JSON format instead of Excel
+# JSON format instead of Excel (no task/workload sheets in JSON mode)
 python scripts/export_team_requirements.py --sprint-name "Sprint260728" --format json
 ```
 
-Output: `doc/requirements/{sprint}/{sprint}_requirements.xlsx`. Uses `team.members[].yunxiao_id` as creator filter (all non-exempt members). Excel includes standard fields + auto-discovered custom fields.
+Output: `doc/requirements/{sprint}/{sprint}_requirements.xlsx`. Uses `team.members[].yunxiao_id` as creator filter (all non-exempt members). The 任务明细 sheet only includes tasks whose `parentId` points to one of the exported requirements. The 工时汇总 sheet aggregates 预计工时 by assignee name across all child tasks. Child tasks are fetched project-wide (not sprint-filtered) to include tasks whose sprint differs from their parent requirement's sprint.
 
 ### export_sprint_workload.py - Export Sprint Workload Statistics
 
@@ -128,7 +133,36 @@ Output: `doc/workload/{sprint}/{sprint}_workload.xlsx` with two sheets:
 - **工时汇总**: per-person summary (name, role, TL, task count, hours, required, diff, status). Red=under, green=met/over.
 - **任务明细**: every task with serial, subject, assignee, role, hours, status, parent req serial+subject.
 
-Only counts tasks whose `parentId` points to a requirement in this sprint. Excludes exempt members (产品). Members with 0 tasks appear with full gap shown.
+Only counts tasks whose `parentId` points to a requirement in this sprint. Tasks are fetched project-wide (not sprint-filtered) to include tasks whose sprint differs from their parent requirement's sprint. Excludes exempt members (产品). Members with 0 tasks appear with full gap shown.
+
+### export_sprint_tasks_by_role.py - Export Sprint Tasks By Role
+
+Exports all tasks in a sprint, filtered by assignee role (using `team.members` config), to a single Excel file with clickable 链接 column and 工时汇总 sheet.
+
+```bash
+# Export all 后端研发 tasks
+python scripts/export_sprint_tasks_by_role.py --sprint-name "Sprint260728" --role 后端研发
+
+# Export 前端研发 tasks
+python scripts/export_sprint_tasks_by_role.py --sprint-name "Sprint260728" --role 前端研发
+
+# Export all non-exempt team members' tasks (all R&D roles)
+python scripts/export_sprint_tasks_by_role.py --sprint-name "Sprint260728" --all
+
+# Custom output filename
+python scripts/export_sprint_tasks_by_role.py --sprint-name "Sprint260728" --role 后端研发 --output-name "后端任务总表"
+
+# Skip description fetching (faster, description column will be empty)
+python scripts/export_sprint_tasks_by_role.py --sprint-name "Sprint260728" --role 后端研发 --no-descriptions
+```
+
+Output: `exports/{sprint}_{role}_tasks.xlsx` (or `{sprint}_all_tasks.xlsx` with `--all`, or custom name with `--output-name`). Excel includes:
+- **任务明细** sheet: all filtered tasks with auto-discovered columns. A clickable 链接 column (Yunxiao web URL) is inserted before 标题.
+- **工时汇总** sheet: per-person summary (name, task count, 预计工时 sum) with totals row.
+
+Filters by `assignedTo` field matching `team.members[].yunxiao_id` for the given role. Requires `yunxiao_id` to be filled in config.
+
+Workitem URL format: `https://devops.aliyun.com/projex/project/{project_id}/task/{workitem_id}`
 
 ### create_tasks.py - Auto-Create Tasks To Fill Workload Gaps
 
@@ -213,6 +247,28 @@ The config file supports a `team` section with member roster and workload rules:
 
 PITFALL: Developers who never created a requirement will NOT appear in the creator-only scan. The dual-scan (creators + assignees) is essential to find all team members.
 
+### External Members (跨组帮忙研发)
+
+When developers from other teams help out on your product's requirements, their tasks will appear in the 任务明细 and 工时汇总 sheets. To show their role correctly, add them to `team.external_members` in config:
+
+```json
+{
+  "team": {
+    "members": [ ... ],
+    "workload": { ... },
+    "external_members": [
+      {"name": "涂冉", "role": "后端研发", "yunxiao_id": "xxxxxxxx"}
+    ]
+  }
+}
+```
+
+- `name` -- must match the assignee name returned by the Yunxiao API (used for role lookup in task/workload sheets).
+- `role` -- free text, typically 后端研发 / 前端研发 / RPA研发.
+- `yunxiao_id` -- Yunxiao internal user ID (optional for role lookup, but recommended for completeness).
+
+External members are NOT included in the team creator filter (they don't affect which requirements are exported). They are only used to resolve role labels in the 任务明细 and 工时汇总 sheets. If an assignee is not found in either `team.members` or `team.external_members`, their role column will be blank.
+
 ### Task Creation Configuration
 
 The config file supports a `task_creation` section for auto-creating tasks to fill workload gaps:
@@ -274,8 +330,16 @@ When the request is exploratory or requires multi-tool synthesis, use the config
 ## Pitfalls
 
 - **Config file vs example**: Users may accidentally edit `config/yunxiao_config.example.json` (the template) instead of `config/yunxiao_config.json` (the real config). The example file is tracked in git and contains placeholders. If real data appears in the example, restore it to placeholders and migrate the data to `yunxiao_config.json`. The real config is gitignored.
-- **Windows path quirk with write_file**: The `write_file` and `patch` tools on Windows resolve MSYS-style paths like `/d/SunProjects/...` incorrectly to `C:\d\SunProjects\...`. Always use forward-slash Windows paths (e.g. `D:/SunProjects/...`).
+- **Windows path quirk with write_file**: The `write_file` and `patch` tools on Windows resolve MSYS-style paths like `/d/SunProjects/...` incorrectly to `C:\\d\\SunProjects\\...`. Always use forward-slash Windows paths (e.g. `D:/SunProjects/...`).
 - **load_config_file type check**: The function accepts `str | Path | None`. Early versions only accepted `Path`, which caused `AttributeError: 'str' object has no attribute 'exists'` when called with a string path. Fixed in current version.
+- **openpyxl dependency**: Excel-exporting scripts (`export_sprint.py`, `export_sprint_tasks_by_role.py`, `export_team_requirements.py`, `export_sprint_workload.py`) require `openpyxl`. The Hermes venv may not have it. Install with: `uv pip install openpyxl --python <hermes_venv_python>`. When running via `execute_code`, use `sys.executable` to find the venv path.
+- **Row index alignment when inserting columns**: When a script inserts an extra column (e.g. 链接 before 标题) into row data before passing to `write_excel`, the row list becomes longer than the header list. The `write_excel` function must track a separate row index when reconstructing final rows, NOT use `enumerate(task_headers)` as the row index. See `export_sprint_tasks_by_role.py` `write_excel()` for the correct pattern.
+- **Workitem web URL format**: The correct format is `https://devops.aliyun.com/projex/project/{project_id}/task/{workitem_id}` -- no organization segment, path segment is `task` (not `workitem`). The wrong format `https://devops.aliyun.com/organization/{org_id}/projex/project/{project_id}/workitem/{workitem_id}` redirects to login page. See `references/yunxiao-openapi-patterns.md` for details.
+- **Excel file locked for writing**: When re-running an export script while the previous Excel file is still open in Excel, `workbook.save()` raises `PermissionError`. Use a different output filename or close the file first.
+- **build_config must return file_config**: Scripts that need access to raw config (e.g. for `team.external_members`) must have `build_config()` return `file_config` alongside `config` and `team_members`. Forgetting this causes `NameError: name 'file_config' is not defined` at runtime.
+- **Status filtering (已取消)**: All export scripts must call `filter_excluded_statuses()` on items immediately after `fetch_all_workitems()`. This filters out "已取消" status items so they don't pollute Excel exports or workload statistics. The function and `EXCLUDED_STATUSES` set are defined in `lib/yunxiao_client.py`. See `references/yunxiao-openapi-patterns.md` for details.
+- **Role resolution from team.members + external_members**: When building name->role lookup for Excel sheets, merge `team.members` and `team.external_members` into a single dict. External members only provide role labels for the 任务明细 and 工时汇总 sheets; they are NOT included in the team creator filter (which determines which requirements are exported). If an assignee name is not found in either config section, their role column is blank.
+- **Cross-sprint child tasks (CRITICAL)**: When fetching child tasks for requirements in a sprint, do NOT sprint-filter the task search. A task's `sprint` field may differ from its parent requirement's sprint (e.g. task assigned to Sprint260714 but parent requirement in Sprint260728). Sprint-filtering the task search silently misses these tasks, causing missing people and under-counted hours in workload statistics. Always fetch tasks with `sprint_id=""` and filter by `parentId` matching the requirement ID set. This affects `export_team_requirements.py` and `export_sprint_workload.py`. See `references/yunxiao-openapi-patterns.md` for details.
 
 ## First-run Onboarding
 

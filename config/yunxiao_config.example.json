@@ -25,7 +25,10 @@
     "workload": {
       "default_hours_per_sprint": 76,
       "tl_hours_per_sprint": 72
-    }
+    },
+    "external_members": [
+      {"name": "", "role": "后端研发", "yunxiao_id": ""}
+    ]
   },
   "task_creation": {
     "workitem_type_id": "",

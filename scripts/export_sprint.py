@@ -47,6 +47,7 @@ from yunxiao_client import (
     resolve_sprint,
     standard_value,
     STANDARD_FIELD_BY_HEADER,
+    filter_excluded_statuses,
 )
 
 from openpyxl import Workbook
@@ -305,6 +306,7 @@ def main() -> int:
 
     if args.kind in ("req", "all"):
         req_items = client.fetch_all_workitems(config["project_id"], sprint_id, "Req")
+        req_items = filter_excluded_statuses(req_items)
         print(f"Requirements: fetching descriptions for {len(req_items)} items...")
         client.enrich_with_descriptions(req_items)
         req_path = output_dir / f"{safe_sprint_name}_requirements.xlsx"
@@ -325,6 +327,7 @@ def main() -> int:
     task_summary_md: str | None = None
     if args.kind in ("task", "all"):
         task_items = client.fetch_all_workitems(config["project_id"], sprint_id, "Task")
+        task_items = filter_excluded_statuses(task_items)
         print(f"Tasks: fetching descriptions for {len(task_items)} items...")
         client.enrich_with_descriptions(task_items)
         task_path = output_dir / f"{safe_sprint_name}_tasks.xlsx"

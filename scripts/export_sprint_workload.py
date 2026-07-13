@@ -33,6 +33,7 @@ from yunxiao_client import (
     load_team,
     resolve_sprint,
     object_name,
+    filter_excluded_statuses,
 )
 
 from openpyxl import Workbook
@@ -268,13 +269,16 @@ def main() -> int:
     # Fetch requirements in this sprint (to get parent IDs)
     print("Fetching requirements...", file=sys.stderr)
     reqs = client.fetch_all_workitems(config["project_id"], sprint_id, "Req")
+    reqs = filter_excluded_statuses(reqs)
     req_ids = set(str(r.get("id") or "") for r in reqs)
     req_by_id: dict[str, dict[str, Any]] = {str(r.get("id") or ""): r for r in reqs}
     print(f"  {len(reqs)} requirements found.", file=sys.stderr)
 
-    # Fetch tasks in this sprint
+    # Fetch ALL tasks in project (not sprint-filtered) so we don't miss
+    # tasks whose sprint differs from their parent requirement's sprint
     print("Fetching tasks...", file=sys.stderr)
-    tasks = client.fetch_all_workitems(config["project_id"], sprint_id, "Task")
+    tasks = client.fetch_all_workitems(config["project_id"], "", "Task")
+    tasks = filter_excluded_statuses(tasks)
     print(f"  {len(tasks)} tasks found.", file=sys.stderr)
 
     # Filter: task's parent must be a requirement in this sprint

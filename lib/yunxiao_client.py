@@ -333,6 +333,18 @@ def object_name(value: Any) -> str:
     return str(value)
 
 
+# Statuses to exclude from all exports
+EXCLUDED_STATUSES = {"已取消"}
+
+
+def filter_excluded_statuses(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter out items whose status is in EXCLUDED_STATUSES (e.g. 已取消)."""
+    return [
+        item for item in items
+        if object_name(item.get("status")) not in EXCLUDED_STATUSES
+    ]
+
+
 def people_names(value: Any) -> str:
     if isinstance(value, list):
         names = [object_name(item) for item in value]
