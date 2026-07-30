@@ -15,9 +15,14 @@ Codex / Hermes skill for handling Alibaba Cloud DevOps (Yunxiao) project collabo
 ├── lib/
 │   └── yunxiao_client.py            # Shared API client (config, HTTP, sprint, workitem)
 ├── scripts/
-│   ├── export_sprint.py             # Export sprint work items to Excel
+│   ├── create_requirement.py       # Create a requirement (returns serialNumber + URL)
+│   ├── create_tasks.py             # Auto-create tasks to fill workload gaps
+│   ├── export_sprint.py            # Export sprint work items to Excel
+│   ├── export_sprint_tasks_by_role.py  # Export sprint tasks filtered by role
+│   ├── export_sprint_workload.py    # Export sprint workload statistics
+│   ├── export_team_requirements.py  # Export team-created requirements to Excel
 │   ├── fetch_for_prd.py             # Fetch requirement data for PRD generation
-│   └── list_requirements.py         # List requirements filtered by creator / sprint
+│   └── list_requirements.py        # List requirements filtered by creator / sprint
 ├── config/
 │   ├── yunxiao_config.example.json  # Config template (copy to yunxiao_config.json)
 │   └── template.md                  # PRD template (6-section default)
@@ -106,13 +111,18 @@ Use `project-management` for normal requirement and task work. Add `organization
 
 Official Yunxiao MCP documentation: https://help.aliyun.com/zh/yunxiao/developer-reference/cloud-effect-mcp-tool-instructions
 
-## Install The Skill
+## Install As Agent Skill
 
-Copy `skills/yunxiao-project-assistant` into your Codex / Hermes skills directory:
+Copy `skills/yunxiao-project-assistant` into your agent's skills directory:
 
+**Hermes:**
 ```powershell
-Copy-Item -Recurse -Force .\skills\yunxiao-project-assistant "$env:USERPROFILE\.codex\skills\yunxiao-project-assistant"
+Copy-Item -Recurse -Force .\skills\yunxiao-project-assistant "$env:USERPROFILE\AppData\Local\hermes\skills\yunxiao-project-assistant"
 ```
+
+**Claude Code:** recognizes `CLAUDE.md` at project root automatically.
+
+**OpenAI Codex:** recognizes `AGENTS.md` at project root automatically.
 
 Restart your agent after copying if the skill list does not refresh automatically.
 

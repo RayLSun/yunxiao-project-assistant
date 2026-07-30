@@ -25,8 +25,9 @@ Both modes share the same authentication (personal access token) and organizatio
 | Discover creator IDs in a project | Script: `list_requirements.py --dump-creators` | Discovery helper |
 | Export team-created requirements to Excel | Script: `export_team_requirements.py` | Sprint + team creator filter, single Excel |
 | Export sprint workload statistics | Script: `export_sprint_workload.py` | Per-person 预计工时 vs required hours |
-| Export sprint tasks filtered by role | Script: `export_sprint_tasks_by_role.py` | Per-role task list with 链接 column + 工时汇总 |
+| Export sprint tasks filtered by role | Script: `export_sprint_tasks_by_role.py` | Per-role task list with 链接 column + 工时汇总. Supports `--role`, `--all`, `--no-descriptions` |
 | Auto-create tasks to fill workload gaps | Script: `create_tasks.py` | Creates tasks under requirements for under-hour members |
+| Create a requirement with title & description | Script: `create_requirement.py` | Creates a requirement (技术类/业务类), returns serialNumber + web URL |
 | Analyze a requirement (description, comments, fields) | MCP | Flexible, multi-tool, AI synthesizes |
 | Check status / assignee across items | MCP | Ad-hoc, user-driven scope |
 | Update status, add comment, create child task | MCP | Write operations, AI confirms before writing |
@@ -109,7 +110,7 @@ Output: JSON on stdout (default) or formatted table. JSON includes id, serialNum
 Exports all requirements created by team members in a specific sprint to a single Excel file with three sheets:
 
 1. **需求列表** - all team-created requirements with auto-discovered custom fields
-2. **任务明细** - child tasks under those requirements (任务编号, 任务标题, 负责人, 角色, 预计工时, 状态, 父需求编号, 父需求标题)
+2. **任务明细** - child tasks under those requirements (任务编号, 任务标题, 负责人, 角色, 预计工时, 任务迭代, 状态, 父需求编号, 父需求标题, 链接). The 任务迭代 column shows the task's own sprint (may differ from the parent requirement's sprint). The 链接 column is a clickable hyperlink to the Yunxiao web UI.
 3. **工时汇总** - per-person summary (姓名, 角色, 任务数, 预计工时) with totals row
 
 ```bash
@@ -119,7 +120,53 @@ python scripts/export_team_requirements.py --sprint-name "Sprint260728"
 python scripts/export_team_requirements.py --sprint-name "Sprint260728" --format json
 ```
 
-Output: `doc/requirements/{sprint}/{sprint}_requirements.xlsx`. Uses `team.members[].yunxiao_id` as creator filter (all non-exempt members). The 任务明细 sheet only includes tasks whose `parentId` points to one of the exported requirements. The 工时汇总 sheet aggregates 预计工时 by assignee name across all child tasks. Child tasks are fetched project-wide (not sprint-filtered) to include tasks whose sprint differs from their parent requirement's sprint.
+Output: `doc/requirements/{sprint}/{sprint}_requirements.xlsx`. Uses `team.members[].yunxiao_id` as creator filter — this is ALL members with a non-empty `yunxiao_id`, INCLUDING exempt 产品 members. The `exempt` flag only zeroes `required_hours` for workload stats; it does NOT exclude a member from the creator filter. The 任务明细 sheet only includes tasks whose `parentId` points to one of the exported requirements. The 工时汇总 sheet aggregates 预计工时 by assignee name across all child tasks. Child tasks are fetched project-wide (not sprint-filtered) to include tasks whose sprint differs from their parent requirement's sprint.
+
+### create_requirement.py - Create A Requirement
+
+Creates a requirement in Yunxiao Projex from the agent's conversation context. When the user says something like "创建需求：XXX" or "帮我建个需求，标题是 YYY，描述是 ZZZ", the agent parses the title/description and calls this script.
+
+Two requirement types are supported:
+- **技术类需求** (`bca48ee2a0976d38f4802fae`) — default type, required fields: 里程碑, 业务系统, 成本分摊部门
+- **业务类需求** (`b759681e33af77f5c8620cbc`) — additional required field: 2026预算编号
+
+```bash
+# Basic: create a 技术类需求 with default assignee (first non-exempt team member)
+python scripts/create_requirement.py --title "需求标题" --description "需求描述"
+
+# Specify type and assignee
+python scripts/create_requirement.py --title "标题" --description "描述" --type 技术 --assignee "孙磊"
+python scripts/create_requirement.py --title "标题" --description "描述" --type 业务 --assignee "孙磊" --cost-dept "WFS"
+
+# Dry run (preview only)
+python scripts/create_requirement.py --title "标题" --description "描述" --dry-run
+
+# Show available types / assignees
+python scripts/create_requirement.py --show-types
+python scripts/create_requirement.py --show-assignees
+```
+
+Output (JSON on stdout):
+```json
+{"id": "...", "serialNumber": "HWTQ-2875", "subject": "...", "type": "技术类需求", "assignee": "孙磊", "url": "https://devops.aliyun.com/..."}
+```
+
+**Agent workflow** when user says "创建需求：XXX":
+1. Parse the user's message to extract title and description. If unclear, ask once.
+1. Determine type (default: 业务). If user says "技术类需求" or mentions 技术, use 技术 type.
+3. Determine assignee (default: first non-exempt team member). If user specifies someone, use their name.
+4. Run the script. On success, return the serialNumber and clickable URL to the user.
+5. Do NOT set sprint — the user will assign it manually after creation.
+
+Default field values:
+- 里程碑: "/"
+- 业务系统: "AI-招聘助理"
+- 成本分摊部门: "DEC" (技术类) / "WFS" (业务类)
+- 2026预算编号: "/" (业务类 only)
+
+PITFALL: The create API only returns `id`. The script automatically fetches the detail endpoint to get `serialNumber`. If the detail fetch fails, the URL still works (it uses the `id`).
+
+PITFALL: `create_workitem()` in `yunxiao_client.py` requires `parent_id` as a positional arg. When creating a top-level requirement (no parent), pass `parent_id=""`.
 
 ### export_sprint_workload.py - Export Sprint Workload Statistics
 
@@ -134,6 +181,21 @@ Output: `doc/workload/{sprint}/{sprint}_workload.xlsx` with two sheets:
 - **任务明细**: every task with serial, subject, assignee, role, hours, status, parent req serial+subject.
 
 Only counts tasks whose `parentId` points to a requirement in this sprint. Tasks are fetched project-wide (not sprint-filtered) to include tasks whose sprint differs from their parent requirement's sprint. Excludes exempt members (产品). Members with 0 tasks appear with full gap shown.
+
+### Re-running exports (common workflow)
+
+Sprint workload and team-requirement exports are designed to be re-run repeatedly as the sprint progresses. Each run overwrites the previous Excel file. When the user says "再帮我统计一次" / "re-run" / "数据已经更新", simply re-run the same command — do NOT ask for confirmation or re-read the skill.
+
+After each workload re-run, render the summary table in chat AND highlight what changed since the last run (task count delta, per-person hour deltas, status transitions e.g. 不足→达标→超出). This delta view is the primary value to the user on re-runs.
+
+### Workload vs team-requirement scope difference (explain to user)
+
+`export_sprint_workload.py` and `export_team_requirements.py` produce DIFFERENT per-person hour totals for the same sprint. This is by design, not a bug:
+
+- `export_sprint_workload.py` — counts ALL tasks whose parent requirement is in the sprint (full sprint scope, includes tasks from non-team-created requirements). This is the **management view** of total R&D workload.
+- `export_team_requirements.py` — counts only child tasks whose parent requirement was CREATED by a team member (team scope). This is the **team delivery view**.
+
+When the user runs both, proactively note which scope each number represents so they don't confuse the two totals.
 
 ### export_sprint_tasks_by_role.py - Export Sprint Tasks By Role
 
@@ -238,12 +300,13 @@ The config file supports a `team` section with member roster and workload rules:
 - `is_tl: true` -- TL workload (72h by default). Non-TL R&D get 76h.
 - `yunxiao_id` -- Yunxiao internal user ID (NOT the username). Required for `--role` and `--team` filters.
 
-**Auto-fill yunxiao_id workflow**: When the user has filled `name` but left `yunxiao_id` empty:
-1. Run `python scripts/list_requirements.py --dump-creators` -- it scans both requirements (creators) and tasks (assignees) to find all people.
-2. Auto-matches by exact name against `team.members[].name` (case-insensitive, whitespace-trimmed).
-3. Writes matched `yunxiao_id` values back to `config/yunxiao_config.json` automatically.
-4. If a name doesn't auto-match, show the user the dump list and ask them to identify the correct ID.
-5. Verify with `python scripts/list_requirements.py --show-team`.
+**Auto-fill yunxiao_id workflow**: When the user has filled `name` but left `yunxiao_id` empty (including after adding a new 产品 member, who may be a primary requirement creator):
+1. **Run `--dump-creators` proactively** — don't wait for an export to silently drop data. Any newly added member (especially 产品) should have their `yunxiao_id` filled before the next requirement/team export, even if they are `exempt: true`.
+2. `--dump-creators` scans both requirements (creators) and tasks (assignees) to find all people.
+3. Auto-matches by exact name against `team.members[].name` (case-insensitive, whitespace-trimmed).
+4. Writes matched `yunxiao_id` values back to `config/yunxiao_config.json` automatically.
+5. If a name doesn't auto-match, show the user the dump list and ask them to identify the correct ID.
+6. Verify with `python scripts/list_requirements.py --show-team`.
 
 PITFALL: Developers who never created a requirement will NOT appear in the creator-only scan. The dual-scan (creators + assignees) is essential to find all team members.
 
@@ -297,6 +360,55 @@ The config file supports a `task_creation` section for auto-creating tasks to fi
 
 PITFALL: `workitem_type_id` and `hours_field_id` are org-specific. Discover them by fetching a sample task and inspecting its `workitemType.id` and `customFieldValues` before configuring.
 
+### create_requirement.py - Create A Requirement
+
+Creates a requirement (需求) in Yunxiao from the agent's natural-language invocation. The user says something like "创建需求：实现XXX功能" and the agent extracts the title + description, calls this script, and returns the web URL.
+
+**Agent workflow** (no --dry-run needed for single requirement creation):
+1. Parse user's input: extract title (first line / short description) and description (rest of the content).
+2. Call `create_requirement.py --title "..." --description "..." --type 技术`.
+3. Parse the JSON output to get `serialNumber`, `url`, `id`.
+4. Return the link and serial number to the user. They will manually adjust fields (sprint, assignee, etc.) in the Yunxiao web UI.
+
+```bash
+# Default: 技术类需求, first non-exempt team member as assignee
+python scripts/create_requirement.py --title "需求标题" --description "详细描述"
+
+# Specify type (技术/业务) and assignee
+python scripts/create_requirement.py --title "标题" --description "描述" --type 技术 --assignee "孙磊"
+
+# Specify custom field values
+python scripts/create_requirement.py --title "标题" --description "描述" --milestone "一键发布岗位" --biz-system "AI-招聘助理" --cost-dept "DEC"
+
+# Business type (requires extra 2026预算编号 field)
+python scripts/create_requirement.py --title "标题" --description "描述" --type 业务 --biz-system "iStaffing-SSC" --cost-dept "WFS"
+
+# Preview
+python scripts/create_requirement.py --title "标题" --description "描述" --dry-run
+
+# Show available types / assignees
+python scripts/create_requirement.py --show-types
+python scripts/create_requirement.py --show-assignees
+```
+
+Output: JSON on stdout with `id`, `serialNumber`, `subject`, `type`, `assignee`, `url`.
+
+**Requirement types** (discovered from existing workitems in this project):
+| Keyword | Type Name | workitemTypeId | Required Custom Fields |
+|---|---|---|---|
+| 技术 | 技术类需求 | `bca48ee2a0976d38f4802fae` | 里程碑, 业务系统, 成本分摊部门 |
+| 业务 | 业务类需求 | `b759681e33af77f5c8620cbc` | 里程碑, 业务系统, 成本分摊部门, 2026预算编号 |
+
+**Default values** (when user doesn't specify): 里程碑="/", 业务系统="AI-招聘助理", 成本分摊部门=type default (DEC for 技术, WFS for 业务), 2026预算编号="/".
+
+PITFALL: Each requirement type has DIFFERENT required custom fields. 业务类需求 requires 2026预算编号 but 技术类需求 does not. The script hardcodes the `REQ_TYPE_MAP` with per-type required fields — update this map if new types are added.
+
+PITFALL: The CreateWorkitem API only returns `{"id": "..."}` — no `serialNumber`, `subject`, or other fields. The script calls `fetch_workitem_detail()` as a second request to get the serialNumber. If the detail call fails, the URL is still constructed correctly from the id.
+
+PITFALL: `assignedTo` is required for requirement creation (API returns "指派人不能为空"). If the user doesn't specify, the script defaults to the first non-exempt team member with a yunxiao_id. User preference: they will manually adjust assignee and other fields in the web UI after creation.
+
+See `references/yunxiao-openapi-patterns.md` for requirement creation API details and field IDs.
+
 ## MCP Mode
 
 When the request is exploratory or requires multi-tool synthesis, use the configured Yunxiao MCP Server. The MCP tools provide direct read/write access to work items, comments, fields, iterations, and statuses.
@@ -330,6 +442,7 @@ When the request is exploratory or requires multi-tool synthesis, use the config
 ## Pitfalls
 
 - **Config file vs example**: Users may accidentally edit `config/yunxiao_config.example.json` (the template) instead of `config/yunxiao_config.json` (the real config). The example file is tracked in git and contains placeholders. If real data appears in the example, restore it to placeholders and migrate the data to `yunxiao_config.json`. The real config is gitignored.
+- **Config missing from project dir but exists in skill install dir**: When running scripts from the source project (`D:/SunProjects/yunxiao-project-assistant`), `config/yunxiao_config.json` may be absent (gitignored, not present after fresh clone/cleanup). The installed skill copy at `~/AppData/Local/hermes/skills/yunxiao-project-assistant/config/yunxiao_config.json` typically holds the real config (placed there during skill setup). Before asking the user for token/org/project, ALWAYS check the skill install dir first and copy the config over: `cp ~/AppData/Local/hermes/skills/yunxiao-project-assistant/config/yunxiao_config.json <project_dir>/config/yunxiao_config.json`. The org ID and project ID are also in Hermes memory as a fallback.
 - **Windows path quirk with write_file**: The `write_file` and `patch` tools on Windows resolve MSYS-style paths like `/d/SunProjects/...` incorrectly to `C:\\d\\SunProjects\\...`. Always use forward-slash Windows paths (e.g. `D:/SunProjects/...`).
 - **load_config_file type check**: The function accepts `str | Path | None`. Early versions only accepted `Path`, which caused `AttributeError: 'str' object has no attribute 'exists'` when called with a string path. Fixed in current version.
 - **openpyxl dependency**: Excel-exporting scripts (`export_sprint.py`, `export_sprint_tasks_by_role.py`, `export_team_requirements.py`, `export_sprint_workload.py`) require `openpyxl`. The Hermes venv may not have it. Install with: `uv pip install openpyxl --python <hermes_venv_python>`. When running via `execute_code`, use `sys.executable` to find the venv path.
@@ -340,6 +453,7 @@ When the request is exploratory or requires multi-tool synthesis, use the config
 - **Status filtering (已取消)**: All export scripts must call `filter_excluded_statuses()` on items immediately after `fetch_all_workitems()`. This filters out "已取消" status items so they don't pollute Excel exports or workload statistics. The function and `EXCLUDED_STATUSES` set are defined in `lib/yunxiao_client.py`. See `references/yunxiao-openapi-patterns.md` for details.
 - **Role resolution from team.members + external_members**: When building name->role lookup for Excel sheets, merge `team.members` and `team.external_members` into a single dict. External members only provide role labels for the 任务明细 and 工时汇总 sheets; they are NOT included in the team creator filter (which determines which requirements are exported). If an assignee name is not found in either config section, their role column is blank.
 - **Cross-sprint child tasks (CRITICAL)**: When fetching child tasks for requirements in a sprint, do NOT sprint-filter the task search. A task's `sprint` field may differ from its parent requirement's sprint (e.g. task assigned to Sprint260714 but parent requirement in Sprint260728). Sprint-filtering the task search silently misses these tasks, causing missing people and under-counted hours in workload statistics. Always fetch tasks with `sprint_id=""` and filter by `parentId` matching the requirement ID set. This affects `export_team_requirements.py` and `export_sprint_workload.py`. See `references/yunxiao-openapi-patterns.md` for details.
+- **Exempt members (产品) still need yunxiao_id for requirement exports (CRITICAL)**: `team_creator_ids()` returns ALL members with a non-empty `yunxiao_id` — it does NOT filter by exempt status. Exempt 产品 members are often the PRIMARY creators of requirements. If an exempt member's `yunxiao_id` is empty, every requirement they created — plus all child dev tasks under those requirements — is silently excluded from `export_team_requirements.py` (and the team-scope 工时汇总/任务明细 sheets). SYMPTOM: developer task counts or hours look suspiciously low in the team-requirements export vs the sprint-workload export. FIX: run `--dump-creators` after adding ANY new member (including 产品) to auto-fill their `yunxiao_id`, even when they are `exempt: true`. The workload script (`export_sprint_workload.py`) is unaffected — it fetches all sprint requirements project-wide and does not filter by creator.
 
 ## First-run Onboarding
 
