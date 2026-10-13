@@ -472,6 +472,26 @@ When the script fails with `Missing required config`, or the user asks "where is
 - When a tool or script returns incomplete data, say what is missing instead of inventing field values or statuses.
 - Keep `config/yunxiao_config.json` out of version control - `.gitignore` already excludes it.
 
+## Syncing Back To The Source Repo
+
+The installed skill (`~/AppData/Local/hermes/skills/yunxiao-project-assistant/`) is the working copy; `D:/SunProjects/yunxiao-project-assistant` is the published repo. Direction is **installed → repo**, then commit and push.
+
+The two trees are NOT the same shape, so map paths explicitly:
+
+| Installed skill | Repo |
+|---|---|
+| `SKILL.md` | `skills/yunxiao-project-assistant/SKILL.md` |
+| `agents/`, `references/` | `skills/yunxiao-project-assistant/{agents,references}/` |
+| `lib/`, `scripts/`, `config/` | repo root: `lib/`, `scripts/`, `config/` |
+
+Never copy `config/yunxiao_config.json` (live token) or the output dirs `exports/ prds/ doc/`.
+
+The repo is **PUBLIC**. Before pushing, run the staged-tree audit from the `github-safe-push` skill (secrets, token values, ignored files); `.gitignore` already covers the config and the output dirs. Real team names already exist in that repo's history — don't be alarmed by hits, but confirm your change did not ADD any.
+
+In-repo backups follow the repo's existing convention `<file>.<YYYYMMDD>` **plus** a matching line in `.gitignore`'s `# Backups` block — without the ignore line the backup itself gets published.
+
+`README.md` enumerates every script and reproduces the layout tree: add new scripts and references there in the same commit, or the repo documents itself wrong.
+
 ## References
 
 - Read `references/yunxiao-mcp.md` when configuring or troubleshooting Yunxiao MCP access.
