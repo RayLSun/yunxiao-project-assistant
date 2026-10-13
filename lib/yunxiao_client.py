@@ -410,6 +410,25 @@ STANDARD_FIELD_BY_HEADER = {
 }
 
 
+def workitem_url(project_id: str, workitem_id: str) -> str:
+    """Web UI link for a workitem.
+
+    No ``organization`` path segment, and the segment is ``task`` regardless of
+    the workitem category. A link built with ``/organization/{org}/...`` or
+    ``/workitem/{id}`` redirects to the login page.
+    """
+    return f"https://devops.aliyun.com/projex/project/{project_id}/task/{workitem_id}"
+
+
+def first_line(text: str, limit: int = 60) -> str:
+    """First non-empty line of a description, trimmed — handy for filenames."""
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line:
+            return line[:limit]
+    return ""
+
+
 def standard_value(item: dict[str, Any], field_key: str) -> str:
     if field_key == "serialNumber":
         return str(item.get("serialNumber") or "")
@@ -680,6 +699,186 @@ class YunxiaoClient:
             desc = detail.get("description")
             if desc:
                 item["description"] = desc
+
+    # -- Projects (cross-project support) --
+
+    def list_projects(self, per_page: int = 100) -> list[dict[str, Any]]:
+        """List every project in the organization.
+
+        PITFALL: ``GET /projects`` returns HTTP 404 on center edition. The
+        working endpoint is ``POST /projects:search`` with a page/perPage body.
+        """
+        org_id = _urlencode(self.config["organization_id"])
+        all_projects: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = _request_json(
+                self.config,
+                "POST",
+                f"/oapi/v1/projex/organizations/{org_id}/projects:search",
+                {"page": page, "perPage": per_page},
+            )
+            items = _extract_items(response)
+            all_projects.extend(items)
+            if len(items) < per_page:
+                return all_projects
+            page += 1
+
+    @staticmethod
+    def project_code(project: dict[str, Any]) -> str:
+        """Project short code used as the serialNumber prefix (e.g. ``LMAV``)."""
+        return str(
+            project.get("customCode")
+            or project.get("identifier")
+            or project.get("key")
+            or ""
+        )
+
+    def resolve_project(self, identifier: str) -> dict[str, Any]:
+        """Resolve a project by id, short code (``LMAV``), or name.
+
+        Raises RuntimeError listing the known projects when nothing matches.
+        """
+        want = str(identifier or "").strip()
+        if not want:
+            raise RuntimeError("resolve_project: empty identifier")
+
+        projects = self.list_projects()
+        lowered = want.lower()
+
+        for p in projects:                                    # exact id
+            if str(p.get("id") or "") == want:
+                return p
+        for p in projects:                                    # exact code
+            if self.project_code(p).lower() == lowered:
+                return p
+        for p in projects:                                    # exact name
+            if str(p.get("name") or "").strip().lower() == lowered:
+                return p
+        for p in projects:                                    # code/name contains
+            if lowered in self.project_code(p).lower() or lowered in str(p.get("name") or "").lower():
+                return p
+
+        known = ", ".join(
+            f"{self.project_code(p)}({p.get('name')})" for p in projects if self.project_code(p)
+        )
+        raise RuntimeError(f"project not found: {want}. Known projects: {known}")
+
+    def resolve_project_id(self, identifier: str | None = None) -> str:
+        """Project id from an id/code/name; falls back to the configured project."""
+        if not identifier:
+            return self.config["project_id"]
+        return str(self.resolve_project(identifier).get("id") or "")
+
+    def list_project_summary(self) -> list[dict[str, str]]:
+        """Compact ``[{code, name, id}]`` view of all projects, for --list-projects."""
+        return [
+            {
+                "code": self.project_code(p),
+                "name": str(p.get("name") or ""),
+                "id": str(p.get("id") or ""),
+            }
+            for p in self.list_projects()
+        ]
+
+    # -- Serial-number lookup (single workitem, optionally cross-project) --
+
+    def search_by_serial(
+        self,
+        serial_number: str,
+        project_id: str | None = None,
+        category: str = "Req",
+    ) -> list[dict[str, Any]]:
+        """Find workitems whose serialNumber matches (e.g. ``LMAV-9``).
+
+        Exact matches are returned first; substring hits are the fallback so
+        ``LMAV-9`` never silently returns ``LMAV-90``.
+        """
+        project_id = project_id or self.config["project_id"]
+        conditions = [{
+            "fieldIdentifier": "serialNumber",
+            "operator": "CONTAINS",
+            "value": [str(serial_number)],
+            "toValue": None,
+            "className": "string",
+            "format": "input",
+        }]
+        items = self.fetch_all_workitems(
+            project_id=project_id,
+            sprint_id="",
+            category=category,
+            extra_conditions=conditions,
+        )
+        want = str(serial_number).strip().upper()
+        exact = [i for i in items if str(i.get("serialNumber") or "").upper() == want]
+        return exact or items
+
+    def find_workitem_by_serial(
+        self,
+        serial_number: str,
+        project_id: str | None = None,
+        categories: tuple[str, ...] = ("Req", "Task", "Bug"),
+        all_projects: bool = False,
+    ) -> dict[str, Any]:
+        """Locate exactly one workitem by serialNumber, across projects if needed.
+
+        The serial prefix is itself a project code (``LMAV`` in ``LMAV-9``), so
+        the prefix is resolved to a project first — that makes cross-project
+        lookup the default rather than an opt-in flag.
+
+        Resolution order:
+          1. an explicit ``project_id`` (id / code / name), else
+          2. the project matching the serial prefix, else
+          3. the configured default project, else
+          4. every project in the organization when ``all_projects`` is set.
+
+        Step 4 is what makes a bare typo cost one request per project, so it is
+        opt-in: prefer it only when the prefix is not a project code.
+
+        Returns the workitem dict with three extra keys:
+        ``_projectId``, ``_projectCode``, ``_category``.
+        """
+        serial = str(serial_number or "").strip().upper()
+        if not serial or "-" not in serial:
+            raise RuntimeError(f"invalid serialNumber: {serial_number!r} (expected e.g. LMAV-9)")
+        prefix = serial.split("-", 1)[0]
+
+        candidates: list[str] = []
+
+        def add(pid: str) -> None:
+            pid = str(pid or "")
+            if pid and pid not in candidates:
+                candidates.append(pid)
+
+        explicit = bool(project_id)
+        if explicit:
+            add(self.resolve_project_id(project_id))
+        else:
+            try:                                              # prefix as project code
+                add(self.resolve_project_id(prefix))
+            except RuntimeError:
+                pass
+            add(self.config.get("project_id") or "")          # configured default
+            if all_projects:
+                for p in self.list_projects():
+                    add(str(p.get("id") or ""))
+
+        for pid in candidates:
+            for cat in categories:
+                try:
+                    hits = self.search_by_serial(serial, project_id=pid, category=cat)
+                except Exception:                             # noqa: BLE001
+                    continue
+                if hits:
+                    found = dict(hits[0])
+                    found["_projectId"] = pid
+                    found["_projectCode"] = prefix
+                    found["_category"] = cat
+                    return found
+
+        where = ", ".join(candidates) or "no candidate project"
+        hint = "" if (explicit or all_projects) else " Try --project <id|code|name> or --all-projects."
+        raise RuntimeError(f"workitem not found for serialNumber {serial} (searched: {where}).{hint}")
 
     # -- Convenience: shaped output --
 

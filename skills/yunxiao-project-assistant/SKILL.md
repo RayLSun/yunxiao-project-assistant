@@ -28,6 +28,8 @@ Both modes share the same authentication (personal access token) and organizatio
 | Export sprint tasks filtered by role | Script: `export_sprint_tasks_by_role.py` | Per-role task list with 链接 column + 工时汇总. Supports `--role`, `--all`, `--no-descriptions` |
 | Auto-create tasks to fill workload gaps | Script: `create_tasks.py` | Creates tasks under requirements for under-hour members |
 | Create a requirement with title & description | Script: `create_requirement.py` | Creates a requirement (技术类/业务类), returns serialNumber + web URL |
+| Fetch ONE requirement by serialNumber (e.g. `LMAV-9`) | Script: `get_requirement.py` | Direct serialNumber lookup, resolves the project from the serial prefix |
+| List projects / find which project a code belongs to | Script: `get_requirement.py --list-projects` | Enumerates org projects with their codes |
 | Analyze a requirement (description, comments, fields) | MCP | Flexible, multi-tool, AI synthesizes |
 | Check status / assignee across items | MCP | Ad-hoc, user-driven scope |
 | Update status, add comment, create child task | MCP | Write operations, AI confirms before writing |
@@ -121,52 +123,6 @@ python scripts/export_team_requirements.py --sprint-name "Sprint260728" --format
 ```
 
 Output: `doc/requirements/{sprint}/{sprint}_requirements.xlsx`. Uses `team.members[].yunxiao_id` as creator filter — this is ALL members with a non-empty `yunxiao_id`, INCLUDING exempt 产品 members. The `exempt` flag only zeroes `required_hours` for workload stats; it does NOT exclude a member from the creator filter. The 任务明细 sheet only includes tasks whose `parentId` points to one of the exported requirements. The 工时汇总 sheet aggregates 预计工时 by assignee name across all child tasks. Child tasks are fetched project-wide (not sprint-filtered) to include tasks whose sprint differs from their parent requirement's sprint.
-
-### create_requirement.py - Create A Requirement
-
-Creates a requirement in Yunxiao Projex from the agent's conversation context. When the user says something like "创建需求：XXX" or "帮我建个需求，标题是 YYY，描述是 ZZZ", the agent parses the title/description and calls this script.
-
-Two requirement types are supported:
-- **技术类需求** (`bca48ee2a0976d38f4802fae`) — default type, required fields: 里程碑, 业务系统, 成本分摊部门
-- **业务类需求** (`b759681e33af77f5c8620cbc`) — additional required field: 2026预算编号
-
-```bash
-# Basic: create a 技术类需求 with default assignee (first non-exempt team member)
-python scripts/create_requirement.py --title "需求标题" --description "需求描述"
-
-# Specify type and assignee
-python scripts/create_requirement.py --title "标题" --description "描述" --type 技术 --assignee "孙磊"
-python scripts/create_requirement.py --title "标题" --description "描述" --type 业务 --assignee "孙磊" --cost-dept "WFS"
-
-# Dry run (preview only)
-python scripts/create_requirement.py --title "标题" --description "描述" --dry-run
-
-# Show available types / assignees
-python scripts/create_requirement.py --show-types
-python scripts/create_requirement.py --show-assignees
-```
-
-Output (JSON on stdout):
-```json
-{"id": "...", "serialNumber": "HWTQ-2875", "subject": "...", "type": "技术类需求", "assignee": "孙磊", "url": "https://devops.aliyun.com/..."}
-```
-
-**Agent workflow** when user says "创建需求：XXX":
-1. Parse the user's message to extract title and description. If unclear, ask once.
-1. Determine type (default: 业务). If user says "技术类需求" or mentions 技术, use 技术 type.
-3. Determine assignee (default: first non-exempt team member). If user specifies someone, use their name.
-4. Run the script. On success, return the serialNumber and clickable URL to the user.
-5. Do NOT set sprint — the user will assign it manually after creation.
-
-Default field values:
-- 里程碑: "/"
-- 业务系统: "AI-招聘助理"
-- 成本分摊部门: "DEC" (技术类) / "WFS" (业务类)
-- 2026预算编号: "/" (业务类 only)
-
-PITFALL: The create API only returns `id`. The script automatically fetches the detail endpoint to get `serialNumber`. If the detail fetch fails, the URL still works (it uses the `id`).
-
-PITFALL: `create_workitem()` in `yunxiao_client.py` requires `parent_id` as a positional arg. When creating a top-level requirement (no parent), pass `parent_id=""`.
 
 ### export_sprint_workload.py - Export Sprint Workload Statistics
 
@@ -366,9 +322,10 @@ Creates a requirement (需求) in Yunxiao from the agent's natural-language invo
 
 **Agent workflow** (no --dry-run needed for single requirement creation):
 1. Parse user's input: extract title (first line / short description) and description (rest of the content).
-2. Call `create_requirement.py --title "..." --description "..." --type 技术`.
-3. Parse the JSON output to get `serialNumber`, `url`, `id`.
-4. Return the link and serial number to the user. They will manually adjust fields (sprint, assignee, etc.) in the Yunxiao web UI.
+2. Determine type (default: 业务). If user says "技术类需求" or mentions 技术, use 技术 type.
+3. Determine assignee (default: first non-exempt team member). If user specifies someone, use their name.
+4. Run the script. On success, return the serialNumber and clickable URL to the user.
+5. Do NOT set sprint — the user will assign it manually after creation.
 
 ```bash
 # Default: 技术类需求, first non-exempt team member as assignee
@@ -409,6 +366,41 @@ PITFALL: `assignedTo` is required for requirement creation (API returns "指派�
 
 See `references/yunxiao-openapi-patterns.md` for requirement creation API details and field IDs.
 
+### get_requirement.py - Fetch ONE Requirement By serialNumber
+
+Fetches a single workitem by its serialNumber, resolving the project from the serial prefix. Use this when the user names a specific item ("拉取需求 LMAV-9", "看看 HWTQ-1509") instead of going through `fetch_for_prd.py` (which needs a sprint or a subject keyword).
+
+```bash
+# By serialNumber — the project is derived from the prefix
+python scripts/get_requirement.py --serial LMAV-9
+
+# Human-readable block instead of JSON, and dump the description to a file
+python scripts/get_requirement.py --serial LMAV-9 --format text --save-text /tmp/lmav9.md
+
+# Explicit project (id, short code, or name)
+python scripts/get_requirement.py --serial LMAV-9 --project LMAV
+
+# Skip the detail request when you only need the fields (faster)
+python scripts/get_requirement.py --serial LMAV-9 --no-description
+
+# Enumerate projects (codes + ids) — also the way to discover a prefix
+python scripts/get_requirement.py --list-projects --format text
+```
+
+Output (JSON, default): `{project: {code,name,id}, category, url, workitem: {...shaped..., descriptionText}}`. Add `--raw` to also include the raw detail payload.
+
+Project resolution order: explicit `--project` → the project whose code equals the serial prefix → the configured default. The full org scan only happens with `--all-projects`, so a typo normally fails in ~3s rather than scanning every project.
+
+PITFALL: the configured `project_id` is NOT a constraint. Projects are independent — `LMAV-9` resolves from a client configured for `HWTQ`, which is the whole point of this script. Do not "fix" a missing item by switching the config's `project_id`; that would break the sprint/team exports built on it.
+
+PITFALL: a serialNumber does not say whether the item is a requirement or a task (`HWTQ-1509` is a Task, `LMAV-9` is a requirement), so all three categories are searched by default. Narrow with `--category` only when you already know.
+
+### Requirement → PRD
+
+`get_requirement.py` is the single-item counterpart to `fetch_for_prd.py`: use it to pull one requirement's `descriptionText`, then write the PRD with `config/template.md` (背景与目标 / 用户场景与故事 / 功能需求 / 非功能需求 / 验收标准 / 风险与依赖). Write generated PRDs into `prds/` (gitignored).
+
+When the source description already reads like a finished document, the PRD's value is what it ADDS: User Stories in "作为…我希望…以便…" form, functional points as 输入→处理→输出, Given-When-Then acceptance criteria including the exception branches, and non-functional baselines. Mark genuinely unspecified items 「待补充」 rather than inventing them, and never silently reconcile contradictory source text — list the contradictions under 待澄清事项 and keep both readings.
+
 ## MCP Mode
 
 When the request is exploratory or requires multi-tool synthesis, use the configured Yunxiao MCP Server. The MCP tools provide direct read/write access to work items, comments, fields, iterations, and statuses.
@@ -441,6 +433,10 @@ When the request is exploratory or requires multi-tool synthesis, use the config
 
 ## Pitfalls
 
+- **Project list 404 (CRITICAL)**: `GET /oapi/v1/projex/organizations/{orgId}/projects` returns HTTP 404. The working endpoint is `POST …/projects:search` with body `{"page":1,"perPage":100}`. A 404 here is NOT a permissions or token problem — do not go hunting for allowlist issues.
+- **Config dict key is `token`, not `yunxiao_token`**: `build_config_from_sources()` renames the field. Always read `config["token"]`; `config["yunxiao_token"]` is always empty, which makes a working config look empty. The JSON file keeps the original `yunxiao_token` spelling.
+- **`ExpiredToken` (HTTP 401)**: personal access tokens expire. Before asking the user for a new one, check other Yunxiao configs on the machine — a sibling skill's config (e.g. `~/.claude/skills/yunxiao-sprint-export/config/yunxiao_config.json`) often holds a longer-lived token. Verify it with a cheap search first, write it into the skill config (backup the old file), and never echo the token.
+- **A serialNumber already identifies its project**: the prefix (`LMAV` in `LMAV-9`) is the project's `customCode`, so `get_requirement.py --serial LMAV-9` works from a config whose `project_id` points at a completely different project. Never change the configured `project_id` to reach an item in another project — the team config and sprint exports depend on it.
 - **Config file vs example**: Users may accidentally edit `config/yunxiao_config.example.json` (the template) instead of `config/yunxiao_config.json` (the real config). The example file is tracked in git and contains placeholders. If real data appears in the example, restore it to placeholders and migrate the data to `yunxiao_config.json`. The real config is gitignored.
 - **Config missing from project dir but exists in skill install dir**: When running scripts from the source project (`D:/SunProjects/yunxiao-project-assistant`), `config/yunxiao_config.json` may be absent (gitignored, not present after fresh clone/cleanup). The installed skill copy at `~/AppData/Local/hermes/skills/yunxiao-project-assistant/config/yunxiao_config.json` typically holds the real config (placed there during skill setup). Before asking the user for token/org/project, ALWAYS check the skill install dir first and copy the config over: `cp ~/AppData/Local/hermes/skills/yunxiao-project-assistant/config/yunxiao_config.json <project_dir>/config/yunxiao_config.json`. The org ID and project ID are also in Hermes memory as a fallback.
 - **Windows path quirk with write_file**: The `write_file` and `patch` tools on Windows resolve MSYS-style paths like `/d/SunProjects/...` incorrectly to `C:\\d\\SunProjects\\...`. Always use forward-slash Windows paths (e.g. `D:/SunProjects/...`).
@@ -481,3 +477,4 @@ When the script fails with `Missing required config`, or the user asks "where is
 - Read `references/yunxiao-mcp.md` when configuring or troubleshooting Yunxiao MCP access.
 - Read `references/project-workflows.md` for playbooks for requirement analysis, task triage, comments, and status updates.
 - Read `references/yunxiao-openapi-patterns.md` for API patterns: SearchWorkitems conditions, creator filter, description enrichment, pagination, response extraction.
+- Read `references/yunxiao-requirement-types.md` for requirement type IDs, required custom fields at creation time, and API response quirks.

@@ -324,9 +324,12 @@ def main() -> int:
         hours_by_person[uid]["hours"] += hours
         hours_by_person[uid]["task_count"] += 1
 
-    # Build summary rows
+    # Build summary rows - follow config team.members order (not alphabetical)
     summary_rows: list[list[str]] = []
-    for uid in sorted(hours_by_person.keys(), key=lambda u: hours_by_person[u]["name"]):
+    member_order = [m["yunxiao_id"] for m in team_members if m.get("yunxiao_id")]
+    for uid in member_order:
+        if uid not in hours_by_person:
+            continue
         d = hours_by_person[uid]
         diff = d["hours"] - d["required_hours"]
         if abs(diff) < 0.5:
@@ -347,8 +350,11 @@ def main() -> int:
         ])
 
     # Also include team members who have 0 hours (no tasks in this sprint's requirements)
-    for uid, m in team_by_id.items():
-        if uid not in hours_by_person:
+    # Follow config team.members order for zero-hour members too (non-exempt only)
+    zero_hour_added = {r[0] for r in summary_rows}  # already added names
+    for m in team_members:
+        uid = m.get("yunxiao_id", "")
+        if uid and uid not in hours_by_person and not m.get("exempt", False) and m["name"] not in zero_hour_added:
             summary_rows.append([
                 m["name"],
                 m["role"],

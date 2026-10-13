@@ -71,6 +71,54 @@ When team members have `name` filled but `yunxiao_id` empty:
 
 After auto-fill, `--role` and `--team` filters work immediately.
 
+### Export Team Requirements To Excel
+
+Trigger: "导出团队需求" / "导出迭代内团队创建的需求"
+
+```bash
+python scripts/export_team_requirements.py --sprint-name "Sprint260728"
+```
+
+Output: single Excel file at `doc/requirements/{sprint}/{sprint}_requirements.xlsx`. Uses all non-exempt team members' yunxiao_id as creator filter. Excel includes standard fields + auto-discovered custom fields, freeze panes, and auto-filter.
+
+PREFERENCE: User prefers a single Excel file over multiple scattered markdown files. Default format is `xlsx`; `--format json` is available as fallback.
+
+### Export Sprint Workload Statistics
+
+Trigger: "统计工时" / "看看研发工时" / "workload statistics"
+
+```bash
+python scripts/export_sprint_workload.py --sprint-name "Sprint260728"
+```
+
+Output: `doc/workload/{sprint}/{sprint}_workload.xlsx` with two sheets:
+- **工时汇总**: per-person summary (name, role, TL, task count, hours, required, diff, status). Red=under, green=met/over.
+- **任务明细**: every task with serial, subject, assignee, role, hours, status, parent req serial+subject.
+
+Only counts tasks whose `parentId` points to a requirement in this sprint. Excludes exempt members (产品). Members with 0 tasks appear with full gap shown.
+
+Render the summary table in chat after running so the user sees the workload status immediately.
+
+### Auto-Create Tasks To Fill Workload Gaps
+
+Trigger: "补齐工时" / "创建任务" / "fill workload gaps"
+
+```bash
+# ALWAYS dry-run first
+python scripts/create_tasks.py --sprint-name "Sprint260728" --dry-run
+
+# After user confirms the plan
+python scripts/create_tasks.py --sprint-name "Sprint260728"
+```
+
+**Safe execution workflow** (user preference):
+1. ALWAYS run `--dry-run` first and show the plan to the user
+2. Create ONE task as a test (via execute_code, not the script)
+3. Ask the user to verify it in Yunxiao web UI (task name, assignee, hours, parent, inherited fields)
+4. Only after user confirms, run the full batch without `--dry-run`
+
+After batch creation, run `export_sprint_workload.py` again to verify updated hours.
+
 ## MCP-Based Workflows (Flexible, Exploratory)
 
 ### Triage Assigned Work

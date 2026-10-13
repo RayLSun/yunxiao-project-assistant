@@ -22,6 +22,7 @@ Codex / Hermes skill for handling Alibaba Cloud DevOps (Yunxiao) project collabo
 │   ├── export_sprint_workload.py    # Export sprint workload statistics
 │   ├── export_team_requirements.py  # Export team-created requirements to Excel
 │   ├── fetch_for_prd.py             # Fetch requirement data for PRD generation
+│   ├── get_requirement.py           # Fetch ONE workitem by serialNumber (cross-project)
 │   └── list_requirements.py        # List requirements filtered by creator / sprint
 ├── config/
 │   ├── yunxiao_config.example.json  # Config template (copy to yunxiao_config.json)
@@ -34,7 +35,9 @@ Codex / Hermes skill for handling Alibaba Cloud DevOps (Yunxiao) project collabo
         ├── agents/openai.yaml
         └── references/
             ├── yunxiao-mcp.md       # MCP server setup reference
-            └── project-workflows.md # Playbooks for scripts + MCP
+            ├── project-workflows.md # Playbooks for scripts + MCP
+            ├── yunxiao-openapi-patterns.md   # API patterns: search, projects, serialNumber, tokens
+            └── yunxiao-requirement-types.md  # Requirement type ids + required custom fields
 ```
 
 ## Quick Start
@@ -72,6 +75,10 @@ python scripts/fetch_for_prd.py --sprint-keyword "招聘"
 python scripts/list_requirements.py --dump-creators
 python scripts/list_requirements.py --creator-id abc123 --format table
 
+# Fetch ONE workitem by serialNumber (project resolved from the prefix)
+python scripts/get_requirement.py --serial LMAV-9 --format text
+python scripts/get_requirement.py --list-projects --format text
+
 # Find the config file
 python scripts/export_sprint.py --show-config-path
 ```
@@ -85,6 +92,22 @@ Exports work items (requirements / tasks) from a Yunxiao sprint to Excel. Suppor
 ### fetch_for_prd.py
 
 Fetches requirement data (with descriptions) as JSON on stdout. The agent consumes this JSON, lists requirements for user confirmation, then generates PRD markdown files. Two modes: by sprint (keyword or id) or by requirement name keyword.
+
+### get_requirement.py
+
+Fetches a single workitem by its **serialNumber** (e.g. `LMAV-9`), with the project resolved automatically from the serial prefix — the prefix is the project's short code (`LMAV` for `LMAV-9`), so an item is findable without knowing or configuring which project it lives in. Searches requirements, tasks and bugs unless `--category` narrows it.
+
+```bash
+python scripts/get_requirement.py --serial LMAV-9                     # JSON (default)
+python scripts/get_requirement.py --serial LMAV-9 --format text       # readable block
+python scripts/get_requirement.py --serial LMAV-9 --save-text out.md  # dump description
+python scripts/get_requirement.py --serial LMAV-9 --project LMAV      # explicit project
+python scripts/get_requirement.py --list-projects --format text       # codes + ids
+```
+
+Output (JSON): `{project, category, url, workitem:{serialNumber,subject,status,assignedTo,creator,workitemType,sprintName,descriptionText,customFields}}`. Add `--raw` to include the raw detail payload.
+
+Resolution order: explicit `--project` → the project matching the serial prefix → the configured default; the full organization scan is opt-in via `--all-projects`, so a mistyped serial fails in ~3s instead of scanning every project. Uses only the standard library.
 
 ### list_requirements.py
 
