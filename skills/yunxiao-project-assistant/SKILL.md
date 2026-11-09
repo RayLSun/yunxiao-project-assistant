@@ -28,12 +28,16 @@ Both modes share the same authentication (personal access token) and organizatio
 | Export sprint tasks filtered by role | Script: `export_sprint_tasks_by_role.py` | Per-role task list with 链接 column + 工时汇总. Supports `--role`, `--all`, `--no-descriptions` |
 | Auto-create tasks to fill workload gaps | Script: `create_tasks.py` | Creates tasks under requirements for under-hour members |
 | Create a requirement with title & description | Script: `create_requirement.py` | Creates a requirement (技术类/业务类), returns serialNumber + web URL |
+| Batch-create day-by-day tasks under a requirement | Script: `create_daily_tasks.py` | Daily work plan → one task per day with hours/dates, dedupe-safe |
+| **给需求 id + 下周任务内容，建整周 5 天 40h 任务**（默认口径） | Script: `create_week_plan.py` | 固定槽位（周四 4h 功能联调 / 周五 8h 评审演示发布）+ 28h 可变拆解，总量与每日 8h 硬校验 |
 | Fetch ONE requirement by serialNumber (e.g. `LMAV-9`) | Script: `get_requirement.py` | Direct serialNumber lookup, resolves the project from the serial prefix |
 | List projects / find which project a code belongs to | Script: `get_requirement.py --list-projects` | Enumerates org projects with their codes |
+| Switch to another project (换项目) | Checklist: **Switching Projects** | project_id, team roster, workload hours all change together |
 | Analyze a requirement (description, comments, fields) | MCP | Flexible, multi-tool, AI synthesizes |
 | Check status / assignee across items | MCP | Ad-hoc, user-driven scope |
 | Update status, add comment, create child task | MCP | Write operations, AI confirms before writing |
 | "What did Zhang San work on last sprint?" | Either | Script for raw data, MCP for analysis |
+| 审计某时间窗内新建了哪些工作项、谁建的（"上周建过任务吗"） | Recipe: **Time-Window Audit** | 按 `gmtCreate` 翻页 + `creator` 判定归属 |
 
 ## Script Reference
 
@@ -366,6 +370,44 @@ PITFALL: `assignedTo` is required for requirement creation (API returns "指派�
 
 See `references/yunxiao-openapi-patterns.md` for requirement creation API details and field IDs.
 
+### create_daily_tasks.py - Batch-Create Day-By-Day Tasks Under A Requirement
+
+> 默认不用这个：常规需求走下面的 `create_week_plan.py`（固定槽位 + 每天 8h 硬校验）。只有在用户给出**不对称的日计划**（某天不是 8h、没有周四周五固定任务）时才用本脚本。
+
+Turns a dated work plan (e.g. from a Word doc "第一周任务") into one task per day under a parent requirement. The agent summarizes each day's work into a short title (≤15 chars), puts the detailed items (hours + work + output) into the description, and sets 预计工时 + 计划开始/完成时间 per day.
+
+Plan shape (inline `--plan-json`, `--plan-file`, or stdin):
+```json
+[
+  {"date": "2026-10-19", "title": "需求对齐与AI契约定义",
+   "items": [{"hours": "2h", "work": "与产品对齐首周范围", "output": "就绪任务"}]}
+]
+```
+
+```bash
+# ALWAYS dry-run first (user preference: preview before any batch write)
+python scripts/create_daily_tasks.py --parent LMAV-73 --sprint 1023 --assignee 孙磊 --dry-run --plan-file week1.json
+
+# Create for real
+python scripts/create_daily_tasks.py --parent LMAV-73 --sprint 1023 --assignee 孙磊 --plan-file week1.json
+
+# Parent accepts serialNumber (LMAV-73) or raw workitem id; sprint accepts id or name keyword
+# Disable the 【MM-DD】 title prefix: --title-prefix ''
+```
+
+Behavior:
+- Resolves parent (serial prefix → project), sprint (id or name via sibling-task scan), assignee NAME → id (team.members first, then live creator/assignee scan).
+- Discovers 预计工时 / 计划开始时间 / 计划完成时间 field IDs from an existing task; LMAV defaults are `101586` / `79` / `80` (override with `--hours-field` etc. for other orgs).
+- Title template `【{MMDD}】` + plan title (matches sibling task style); description is simple `<p>` HTML with hours + outputs (formatType RICHTEXT accepts plain HTML).
+- Dedupe guard: skips a plan entry when a sibling task under the same parent already has the exact same subject → re-runs are idempotent.
+- After EACH creation the script reads the task back and verifies subject/assignee/parent/hours/date, printing `OK <serial>` or `MISMATCH {...}`.
+
+**Agent workflow** (same as create_tasks.py): dry-run → show plan → create ONE test task → user verifies in web UI → create the rest. When the user supplies a doc, read it first (e.g. via read_file on .docx), build the plan JSON, and confirm assignee + parent requirement before any write.
+
+PITFALL (CRITICAL, token permission): creation requires the personal access token to have workitem WRITE scope. A read-only token passes every search/detail API but fails creation with HTTP 403 `{"errorCode":"Forbidden","errorMessage":"Current token has no permission to api."}`. This is NOT an endpoint or payload problem — the user must re-generate the token with the write permission enabled. Do not burn retries on 403.
+
+PITFALL: LMAV field IDs (`101586`/`79`/`80`) and task type ID (`ba102e46bc6a8483d9b7f25c`) are org-specific. The script auto-discovers them from an existing task of the same type; if a fresh org has no tasks yet, create the first one manually and re-run.
+
 ### get_requirement.py - Fetch ONE Requirement By serialNumber
 
 Fetches a single workitem by its serialNumber, resolving the project from the serial prefix. Use this when the user names a specific item ("拉取需求 LMAV-9", "看看 HWTQ-1509") instead of going through `fetch_for_prd.py` (which needs a sprint or a subject keyword).
@@ -400,6 +442,85 @@ PITFALL: a serialNumber does not say whether the item is a requirement or a task
 `get_requirement.py` is the single-item counterpart to `fetch_for_prd.py`: use it to pull one requirement's `descriptionText`, then write the PRD with `config/template.md` (背景与目标 / 用户场景与故事 / 功能需求 / 非功能需求 / 验收标准 / 风险与依赖). Write generated PRDs into `prds/` (gitignored).
 
 When the source description already reads like a finished document, the PRD's value is what it ADDS: User Stories in "作为…我希望…以便…" form, functional points as 输入→处理→输出, Given-When-Then acceptance criteria including the exception branches, and non-functional baselines. Mark genuinely unspecified items 「待补充」 rather than inventing them, and never silently reconcile contradictory source text — list the contradictions under 待澄清事项 and keep both readings.
+
+### 周任务口径：一周 5 天、每天 8h（孙磊，2026-11 起）
+
+**触发方式**：用户给「需求 id + 下周主要任务内容」，就直接产出整周任务，不再逐日确认。这是默认口径，别再按旧的「无工时常规任务」建。
+
+固定槽位（每周都一样，工时是硬的）：
+
+| 时间 | 标题 | 工时 | 说明 |
+|---|---|---|---|
+| 周四 | 功能联调 | 4h | 前后端/外部依赖联调窗口 |
+| 周五 | `PRD评审&技术评审&演示与发布` | 8h | 一个任务，不拆；周五不再放别的 |
+
+于是**可变工时为 28h**，且只能落在这些格子里：周一 8h、周二 8h、周三 8h、周四 4h。每天合计必须正好 8h，单块最小 4h（8h = 8 或 4+4）。
+
+两条固定任务都**挂在需求下**（不是无父任务），都要设 预计工时 + 计划开始/完成时间，与开发任务同一迭代。
+
+任务默认参数：`workitemTypeId=ba102e46bc6a8483d9b7f25c`（任务）、`customFieldValues={101586: 工时, 79: 开始日, 80: 完成日}`。描述按兄弟任务风格写 `## 背景 / ## 改动点 / ## 验收`。
+
+用 `scripts/create_week_plan.py` 执行（下一节），不要手搓 —— 它做总量/每日/粒度校验和幂等跳重。
+
+PITFALL: 云效 API **改不了预计工时**（PUT `customFieldValues` 里的 101586/79/80 不生效，读回没变）。工时或日期错了只能删了重建。所以创建前必须 `--dry-run` 把工时表给用户过目，别建完再改。
+
+PITFALL: 读回 `customFieldValues` 时值是 `values[].displayValue`，**没有 `value` 字段** — 用 `f.get("value")` 读会全部得到 `null`，看起来像字段没写进去。日期读回是 `<date> 00:00:00`，比对用 `startswith(date)`。
+
+PITFALL: 无父任务创建时**不要**传 `parentId`（`create_workitem()` 总会塞 `parentId`，传空串未验证）。走 `_request_json(cfg, "POST", f"/oapi/v1/projex/organizations/{org}/workitems", body)` 自己组 body，省略 parentId 即可建成 `EMPTY_VALUE` 无父任务。本口径下所有任务都挂需求，基本用不到这条。
+
+### create_week_plan.py - 整周 5 天 40h 任务（首选）
+
+输入需求 + 下周内容 → 一次建出一周任务，固定槽位由脚本注入，可变块由 agent 拆。
+
+```bash
+# 先 dry-run（必须，工时建完改不了）
+python scripts/create_week_plan.py --parent LMAV-343 --assignee 孙磊 \
+    --monday 2026-11-16 --plan-file week.json --dry-run
+
+# 确认后真建 + 逐条读回校验
+python scripts/create_week_plan.py --parent LMAV-343 --assignee 孙磊 \
+    --monday 2026-11-16 --plan-file week.json
+```
+
+`--monday` 省略时自动取**下一个周一**；`--sprint` 默认 `auto`，按该周一的日期区间在 `list_sprints()` 里匹配（`startDate`/`endDate` 是**毫秒 epoch、UTC**），匹配不到会列出所有迭代并要求显式指定。
+
+plan 只写**可变块**，固定两条不要写（写了周五会被拒）：
+
+```json
+[
+  {"weekday": 0, "hours": 8, "title": "MCP 公共接入层与连接适配",
+   "items": [{"work": "连接适配与统一鉴权", "output": "可复用接入层"}]},
+  {"weekday": 1, "hours": 4, "title": "法务知识库检索能力"},
+  {"weekday": 1, "hours": 4, "title": "知识可回答性判断", "desc": "<p>…</p>"},
+  {"weekday": 3, "hours": 4, "title": "场景联调准备"}
+]
+```
+
+`weekday`：0=周一 … 3=周四（4=周五完全固定，传了即报错）；也可写 `date`。每块 `hours` ∈ {4, 8}。描述用 `desc`（HTML 或纯文本）或 `items`（自动拼列表），都没有就用标题。
+
+脚本行为：
+- 先 `validate()`：每日合计、总 40h、粒度、周五禁用 —— 任一不满足直接退出，**一条都不建**。
+- 打印 Markdown 周表（日期/任务/工时/固定或拆解），真建前给你和用户看。
+- 幂等：同父需求下同标题已存在 → `SKIP`，重跑安全。
+- 每条建完读回校验 subject/assignee/parent/预计工时/计划开始/迭代，输出 `OK <serial>` 或 `MISMATCH {...}`。
+
+**agent 拆分原则**（28h 怎么分）：
+1. 按内容重量分配，别平均切：重的给 8h，轻的给 4h，凑满每天 8h。
+2. 尊重依赖顺序：接入/基建在前，业务逻辑在中，联调准备在周四。
+3. 标题短（≤20 字）、动词开头，跟兄弟任务风格一致（如「MCP 公共接入层与连接适配」），不标题加日期前缀。
+4. 描述写清「做什么 + 产出什么」，别复述标题。
+5. 给用户看的是建议，不是定稿：dry-run 表里让他直接改标题/挪工时，改完重跑 dry-run。
+
+### 按时间窗审计：谁在什么时间新建了什么
+
+触发语：「上周建过任务吗」「这个任务是不是你建的」「这周新建了哪些需求」。做法与坑见 `references/yunxiao-openapi-patterns.md` 的 **Time-Window Audit** 段，要点：
+
+1. **三类 category 都要扫**（`Task`/`Req`/`Bug`）——一个 serial 看不出类别，只扫 Task 会漏掉需求和缺陷，结论就会错。
+2. **按 `gmtCreate` 倒序翻页，遇到早于窗口起点就停**。`gmtCreate`/`gmtModified` 是 **epoch 毫秒**，不是秒；窗口用用户口径的半开区间（如 `[11-02, 11-09)`）。
+3. **creator 只能给到"谁"，给不到"谁用的什么方式"**。token 属于某个人，同一个人既可能在网页上手动建、也可能由 agent 调 API 建，云效侧无法区分。所以"是不是 agent 建"必须再去会话记录里核对（`hermes-agent` 技能里有专门讲会话历史审计的文档），两侧证据都拿到才下结论。
+4. **汇报要带人+时间+条目**，只报"新增 N 条"没有用：用户真正在核对的是"这批里哪些是我的、哪些是别人的"。
+
+PITFALL: 别把"云效上存在"当成"agent 建过"，也别把"会话里没搜到关键词"当成"没调过"。前者缺归属证据，后者缺权威记录——两边都查完再回答，并说明各查了什么。
 
 ## MCP Mode
 
@@ -439,16 +560,23 @@ When the request is exploratory or requires multi-tool synthesis, use the config
 - **A serialNumber already identifies its project**: the prefix (`LMAV` in `LMAV-9`) is the project's `customCode`, so `get_requirement.py --serial LMAV-9` works from a config whose `project_id` points at a completely different project. Never change the configured `project_id` to reach an item in another project — the team config and sprint exports depend on it.
 - **Config file vs example**: Users may accidentally edit `config/yunxiao_config.example.json` (the template) instead of `config/yunxiao_config.json` (the real config). The example file is tracked in git and contains placeholders. If real data appears in the example, restore it to placeholders and migrate the data to `yunxiao_config.json`. The real config is gitignored.
 - **Config missing from project dir but exists in skill install dir**: When running scripts from the source project (`D:/SunProjects/yunxiao-project-assistant`), `config/yunxiao_config.json` may be absent (gitignored, not present after fresh clone/cleanup). The installed skill copy at `~/AppData/Local/hermes/skills/yunxiao-project-assistant/config/yunxiao_config.json` typically holds the real config (placed there during skill setup). Before asking the user for token/org/project, ALWAYS check the skill install dir first and copy the config over: `cp ~/AppData/Local/hermes/skills/yunxiao-project-assistant/config/yunxiao_config.json <project_dir>/config/yunxiao_config.json`. The org ID and project ID are also in Hermes memory as a fallback.
+- **Two config copies, one resolution rule (CRITICAL)**: every script resolves its config as `<script dir>/../config/yunxiao_config.json`. Agent-invoked scripts live in the skill install dir, so the install-dir copy is the LIVE config; the source-repo copy is read only when scripts are run manually from `D:/SunProjects/yunxiao-project-assistant`. The two can silently diverge (different project_id, different team roster). Before diagnosing "config looks wrong", grep `DEFAULT_CONFIG_PATH` in `scripts/` to prove which file an invocation reads, and `diff` both copies before editing either. Note `--dump-creators` writes matched IDs back into whichever copy the script resolved — normally the install-dir one.
 - **Windows path quirk with write_file**: The `write_file` and `patch` tools on Windows resolve MSYS-style paths like `/d/SunProjects/...` incorrectly to `C:\\d\\SunProjects\\...`. Always use forward-slash Windows paths (e.g. `D:/SunProjects/...`).
 - **load_config_file type check**: The function accepts `str | Path | None`. Early versions only accepted `Path`, which caused `AttributeError: 'str' object has no attribute 'exists'` when called with a string path. Fixed in current version.
 - **openpyxl dependency**: Excel-exporting scripts (`export_sprint.py`, `export_sprint_tasks_by_role.py`, `export_team_requirements.py`, `export_sprint_workload.py`) require `openpyxl`. The Hermes venv may not have it. Install with: `uv pip install openpyxl --python <hermes_venv_python>`. When running via `execute_code`, use `sys.executable` to find the venv path.
 - **Row index alignment when inserting columns**: When a script inserts an extra column (e.g. 链接 before 标题) into row data before passing to `write_excel`, the row list becomes longer than the header list. The `write_excel` function must track a separate row index when reconstructing final rows, NOT use `enumerate(task_headers)` as the row index. See `export_sprint_tasks_by_role.py` `write_excel()` for the correct pattern.
 - **Workitem web URL format**: The correct format is `https://devops.aliyun.com/projex/project/{project_id}/task/{workitem_id}` -- no organization segment, path segment is `task` (not `workitem`). The wrong format `https://devops.aliyun.com/organization/{org_id}/projex/project/{project_id}/workitem/{workitem_id}` redirects to login page. See `references/yunxiao-openapi-patterns.md` for details.
+- **Custom-field update endpoint is dead on center edition (307)**: `update_workitem_custom_field` (legacy `POST /organization/{org}/workitems/updateWorkitemField`) fails with `HTTP 307 Temporary Redirect` because `_request_json` does not follow redirects. Create work items with the fields already set in `customFieldValues` instead of patching afterwards. Side effect to accept: date fields (`79`/`80`) set at creation normalize to `<date> 00:00:00`, while web-UI-created sibling tasks show `23:59:59` — same day, cosmetic only.
+- **Task type requires only 预计工时 + 计划开始/完成时间 (LMAV/SME)**: unlike 需求 (which needs 业务系统/成本分摊部门/里程碑), tasks create cleanly with `customFieldValues = {101586: hours, 79: start, 80: end}` — the `业务系统` requirement in the create_tasks pitfall applies to requirements only. Do not over-engineer a task payload with inherited fields.
+- **Create API 403 `Current token has no permission to api` (CRITICAL)**: The personal access token lacks workitem WRITE scope. Reads (search/detail) still work, so a "healthy" config can pass every read test and still fail all creations. Fix: user re-generates the token with write permission. Not an endpoint/payload issue — see the `create_daily_tasks.py` section.
+- **Smoke-run every newly written script before delivering (CRITICAL)**: `py_compile` passing proves NOTHING about the entry guard — `write_file` on this host can mangle `"__main__"` into `"main__"` in the written content, leaving a valid-syntax guard that never fires: the script exits 0 with zero output and looks delivered while doing nothing. After any `write_file` of a Python script, run `python scripts/<name>.py --help` and require actual usage text on stdout before calling it done.
+- **No `%` placeholders in argparse help strings**: argparse %-formats help text, so a literal `%d` in `help=` raises `ValueError: badly formed help string` at startup. Use `{NAME}`-style placeholders (e.g. `{MMDD}`) in both the default value and the help text.
 - **Excel file locked for writing**: When re-running an export script while the previous Excel file is still open in Excel, `workbook.save()` raises `PermissionError`. Use a different output filename or close the file first.
 - **build_config must return file_config**: Scripts that need access to raw config (e.g. for `team.external_members`) must have `build_config()` return `file_config` alongside `config` and `team_members`. Forgetting this causes `NameError: name 'file_config' is not defined` at runtime.
 - **Status filtering (已取消)**: All export scripts must call `filter_excluded_statuses()` on items immediately after `fetch_all_workitems()`. This filters out "已取消" status items so they don't pollute Excel exports or workload statistics. The function and `EXCLUDED_STATUSES` set are defined in `lib/yunxiao_client.py`. See `references/yunxiao-openapi-patterns.md` for details.
 - **Role resolution from team.members + external_members**: When building name->role lookup for Excel sheets, merge `team.members` and `team.external_members` into a single dict. External members only provide role labels for the 任务明细 and 工时汇总 sheets; they are NOT included in the team creator filter (which determines which requirements are exported). If an assignee name is not found in either config section, their role column is blank.
 - **Cross-sprint child tasks (CRITICAL)**: When fetching child tasks for requirements in a sprint, do NOT sprint-filter the task search. A task's `sprint` field may differ from its parent requirement's sprint (e.g. task assigned to Sprint260714 but parent requirement in Sprint260728). Sprint-filtering the task search silently misses these tasks, causing missing people and under-counted hours in workload statistics. Always fetch tasks with `sprint_id=""` and filter by `parentId` matching the requirement ID set. This affects `export_team_requirements.py` and `export_sprint_workload.py`. See `references/yunxiao-openapi-patterns.md` for details.
+- **`parentId` can be the literal string `"EMPTY_VALUE"`**: parentless tasks come back with `"parentId": "EMPTY_VALUE"` (not null/empty), so a truthiness filter passes them through — and calling the detail API on that value 404s with `InvalidWorkitem.NotFound`. Filter by membership (`str(t.get("parentId")) in known_requirement_ids`), never by truthiness, and never fetch detail on a parentId directly.
 - **Exempt members (产品) still need yunxiao_id for requirement exports (CRITICAL)**: `team_creator_ids()` returns ALL members with a non-empty `yunxiao_id` — it does NOT filter by exempt status. Exempt 产品 members are often the PRIMARY creators of requirements. If an exempt member's `yunxiao_id` is empty, every requirement they created — plus all child dev tasks under those requirements — is silently excluded from `export_team_requirements.py` (and the team-scope 工时汇总/任务明细 sheets). SYMPTOM: developer task counts or hours look suspiciously low in the team-requirements export vs the sprint-workload export. FIX: run `--dump-creators` after adding ANY new member (including 产品) to auto-fill their `yunxiao_id`, even when they are `exempt: true`. The workload script (`export_sprint_workload.py`) is unaffected — it fetches all sprint requirements project-wide and does not filter by creator.
 
 ## First-run Onboarding
@@ -463,6 +591,20 @@ When the script fails with `Missing required config`, or the user asks "where is
    - `project_id` - the segment after `/projex/project/` in the web URL
 4. Write the config file. Never echo the token back to the user.
 5. Rerun the original task.
+
+## Switching Projects (换项目)
+
+When the user says they switched to another project (换项目了 / 改配置 / 新项目), `project_id` is NOT the only thing that changes — the team roster is per-project people. All edits go to the skill install dir config (`~/AppData/Local/hermes/skills/yunxiao-project-assistant/config/yunxiao_config.json`), the copy agent-invoked scripts read (see the two-config-copies pitfall).
+
+1. **If the user already edited the config themselves**, verify before building on it: masked read-back of project_id/org/token + one cheap live call (`python scripts/get_requirement.py --list-projects --format text`, which also proves the token is still valid — run it BEFORE any edit so a 401 is not misattributed to the edit).
+2. **Find the target project id** from the `--list-projects` output (code + name + id).
+3. **Edit the config**: set `project_id`; replace `team.members` with the new project's roster (name/role/is_tl/exempt, `yunxiao_id` left EMPTY for auto-fill); adjust `team.workload` hours (hour contracts differ per team); update `task_creation.members_to_fill` and `role_prefixes` if present. `organization_id` and `yunxiao_token` normally stay unchanged.
+4. **Auto-fill IDs**: `python scripts/list_requirements.py --dump-creators` — scans the NEW project's requirements + tasks and writes matched `yunxiao_id`s back into the config. Run it even for exempt 产品 members.
+5. **Verify**: `python scripts/list_requirements.py --show-team` must show zero missing-ID warnings and every member present in the creator IDs list.
+
+Do NOT "sync" the source-repo copy as part of a switch — it is only read when scripts are run manually from that directory. Leave it unless the user asks.
+
+PITFALL: switching only `project_id` while keeping the old team roster silently produces empty exports — the creator filter matches nobody in the new project. An empty team export right after a project switch means the roster, not the API.
 
 ## Safety
 

@@ -15,8 +15,10 @@ Codex / Hermes skill for handling Alibaba Cloud DevOps (Yunxiao) project collabo
 ├── lib/
 │   └── yunxiao_client.py            # Shared API client (config, HTTP, sprint, workitem)
 ├── scripts/
+│   ├── create_daily_tasks.py       # Batch-create one task per day from a dated plan
 │   ├── create_requirement.py       # Create a requirement (returns serialNumber + URL)
 │   ├── create_tasks.py             # Auto-create tasks to fill workload gaps
+│   ├── create_week_plan.py         # Build a full 5-day, 8h/day task week under a requirement
 │   ├── export_sprint.py            # Export sprint work items to Excel
 │   ├── export_sprint_tasks_by_role.py  # Export sprint tasks filtered by role
 │   ├── export_sprint_workload.py    # Export sprint workload statistics
@@ -79,11 +81,39 @@ python scripts/list_requirements.py --creator-id abc123 --format table
 python scripts/get_requirement.py --serial LMAV-9 --format text
 python scripts/get_requirement.py --list-projects --format text
 
+# Build a whole 5-day work week under a requirement (preview first — hours cannot be edited later)
+python scripts/create_week_plan.py --parent LMAV-9 --assignee 孙磊 --monday 2026-11-16 --plan-file week.json --dry-run
+
 # Find the config file
 python scripts/export_sprint.py --show-config-path
 ```
 
 ## Scripts
+
+### create_week_plan.py
+
+Turns "requirement id + next week's main work items" into a complete five-day task week: **8h every day, 40h total**, all tasks parented to that requirement.
+
+Fixed slots are injected by the script; only the variable blocks are supplied:
+
+| Day | Hours | Content |
+|---|---|---|
+| Mon | 8h | variable |
+| Tue | 8h | variable |
+| Wed | 8h | variable |
+| Thu | 4h + 4h | variable + fixed **功能联调** |
+| Fri | 8h | fixed **PRD评审&技术评审&演示与发布** |
+
+The variable budget is therefore exactly 28h and each block is 4h or 8h. The script validates per-day totals, the 40h total, block granularity and the "no variable blocks on Friday" rule **before** writing anything, then prints the week as a Markdown table, creates each task, and reads every one back (subject / assignee / parent / 预计工时 / planned start / sprint). Re-runs are idempotent: a subject that already exists under the parent is skipped.
+
+```bash
+python scripts/create_week_plan.py --parent LMAV-343 --assignee 孙磊 \
+    --monday 2026-11-16 --plan-file week.json --dry-run
+```
+
+`week.json` lists only variable blocks (`weekday` 0=Mon … 3=Thu, `hours` 4 or 8, `title`, optional `desc` or `items`). `--monday` defaults to the next Monday; `--sprint auto` (default) picks the sprint whose date range covers that Monday.
+
+PITFALL: Yunxiao's update API cannot change 预计工时 or planned dates (`PUT customFieldValues` for 101586/79/80 silently does nothing). Always `--dry-run` first — a wrong hour figure means deleting and recreating the task.
 
 ### export_sprint.py
 
